@@ -1,40 +1,196 @@
 import streamlit as st
 import pandas as pd
+import time
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.pipeline import make_pipeline
 
 # ==========================================
-# 1. Page Configuration & Custom Styling
+# 1. Page Configuration & Modern CSS
 # ==========================================
-st.set_page_config(page_title="Spam Detector", page_icon="🛡️", layout="centered")
+st.set_page_config(page_title="SpamGuard AI", page_icon="🛡️", layout="wide", initial_sidebar_state="expanded")
 
-# Custom CSS for a polished frontend
 st.markdown("""
     <style>
-    .main {
-        background-color: #f8f9fa;
+    /* Global Font & Background */
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap');
+    html, body, [class*="css"]  {
+        font-family: 'Inter', sans-serif;
     }
-    .stTextArea textarea {
-        border-radius: 10px;
-        border: 2px solid #ced4da;
-        padding: 15px;
-        font-size: 16px;
+    
+    /* Result Cards */
+    .result-spam {
+        background: linear-gradient(135deg, #ff9a9e 0%, #fecfef 99%);
+        border-left: 8px solid #ff4d4d;
+        padding: 25px;
+        border-radius: 12px;
+        color: #900000;
+        font-size: 24px;
+        font-weight: 800;
+        text-align: center;
+        box-shadow: 0 10px 20px rgba(255, 77, 77, 0.15);
+        animation: slideIn 0.4s ease-out;
     }
-    .stButton>button {
-        width: 100%;
-        border-radius: 10px;
-        background-color: #007bff;
-        color: white;
-        font-size: 18px;
-        font-weight: bold;
-        padding: 10px;
-        transition: 0.3s;
+    
+    .result-safe {
+        background: linear-gradient(135deg, #d4fc79 0%, #96e6a1 100%);
+        border-left: 8px solid #28a745;
+        padding: 25px;
+        border-radius: 12px;
+        color: #0d5c1b;
+        font-size: 24px;
+        font-weight: 800;
+        text-align: center;
+        box-shadow: 0 10px 20px rgba(40, 167, 69, 0.15);
+        animation: slideIn 0.4s ease-out;
     }
-    .stButton>button:hover {
-        background-color: #0056b3;
-        color: white;
+    
+    /* Animations */
+    @keyframes slideIn {
+        from { opacity: 0; transform: translateY(20px); }
+        to { opacity: 1; transform: translateY(0); }
     }
+    
+    /* Hide Streamlit Branding */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    </style>
+""", unsafe_allow_html=True)
+
+# ==========================================
+# 2. Session State Initialization
+# ==========================================
+if 'history' not in st.session_state:
+    st.session_state.history = []
+
+# ==========================================
+# 3. Logic & Data (Cached)
+# ==========================================
+@st.cache_data
+def load_data():
+    base_spam = [
+        "Win a free iPhone now! Click here.", 
+        "URGENT: Your bank account is locked. Verify immediately.", 
+        "Claim your $1000 Walmart gift card today.", 
+        "Exclusive offer just for you. Buy one get one free!", 
+        "Earn $5000 a week working from home! Ask me how."
+    ]
+    base_safe = [
+        "Hey, what time are we meeting tomorrow?", 
+        "Can you send over the notes from class?", 
+        "I'm picking up groceries, do you need anything?", 
+        "Let's catch up later today.", 
+        "The project deadline has been moved to Friday."
+    ]
+    
+    spam_data = [f"{msg} (ID: {i})" for i, msg in enumerate(base_spam * 10)]
+    safe_data = [f"{msg} (Ref: {i})" for i, msg in enumerate(base_safe * 10)]
+    
+    df = pd.DataFrame({
+        'message': spam_data + safe_data,
+        'label': ['spam'] * 50 + ['safe'] * 50
+    })
+    return df.sample(frac=1, random_state=42).reset_index(drop=True)
+
+@st.cache_resource
+def train_model(df):
+    model = make_pipeline(TfidfVectorizer(), MultinomialNB())
+    model.fit(df['message'], df['label'])
+    return model
+
+data = load_data()
+model = train_model(data)
+
+# ==========================================
+# 4. Dashboard Layout - Sidebar
+# ==========================================
+with st.sidebar:
+    st.image("https://cdn-icons-png.flaticon.com/512/2913/2913092.png", width=80) # Placeholder Shield Icon
+    st.title("SpamGuard AI")
+    st.caption("Powered by Machine Learning")
+    st.write("---")
+    
+    st.subheader("📊 Engine Metrics")
+    col1, col2 = st.columns(2)
+    col1.metric("Training Data", f"{len(data)} msg")
+    col2.metric("Algorithm", "Naive Bayes")
+    
+    st.write("---")
+    st.subheader("💡 Tips")
+    st.info("Try pasting a real promotional text message or a casual text to a friend to see how the model reacts.")
+
+# ==========================================
+# 5. Dashboard Layout - Main Workspace
+# ==========================================
+# Use columns to constrain the width of the main content for better readability
+spacer_left, main_col, spacer_right = st.columns([1, 3, 1])
+
+with main_col:
+    st.markdown("<h1 style='text-align: center; margin-bottom: 0;'>Message Analysis Portal</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: gray;'>Detect phishing, promotions, and malicious text in milliseconds.</p>", unsafe_allow_html=True)
+    st.write("")
+    
+    # Input Container
+    with st.container():
+        user_input = st.text_area(
+            "Message Content", 
+            height=120, 
+            placeholder="Type or paste the message you want to scan here...",
+            label_visibility="collapsed"
+        )
+        
+        analyze_btn = st.button("🔍 Scan Message", use_container_width=True, type="primary")
+
+    # Processing & Results
+    if analyze_btn:
+        if not user_input.strip():
+            st.warning("Please enter a message to scan.")
+        else:
+            # UX Enhancement: Fake progress bar to make the AI feel like it's "thinking"
+            with st.spinner("Extracting features and classifying text..."):
+                time.sleep(0.6) # Short delay for tactile feedback
+                
+                prediction = model.predict([user_input])[0]
+                
+                # Save to history
+                st.session_state.history.append({"Message": user_input, "Result": prediction.upper()})
+            
+            # Display Result
+            if prediction == "spam":
+                st.markdown("""
+                    <div class="result-spam">
+                        🚨 THREAT DETECTED: SPAM
+                    </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.markdown("""
+                    <div class="result-safe">
+                        ✅ CLEAR: SAFE MESSAGE
+                    </div>
+                """, unsafe_allow_html=True)
+                st.balloons()
+
+    st.write("---")
+    
+    # History Expander
+    if st.session_state.history:
+        with st.expander("🕒 Session History", expanded=False):
+            history_df = pd.DataFrame(st.session_state.history)
+            
+            # Function to color code the dataframe
+            def color_result(val):
+                color = '#ff4d4d' if val == 'SPAM' else '#28a745'
+                return f'color: {color}; font-weight: bold;'
+            
+            st.dataframe(
+                history_df.style.applymap(color_result, subset=['Result']),
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            if st.button("Clear History", size="small"):
+                st.session_state.history = []
+                st.rerun()    }
     .result-box-spam {
         background-color: #ffe6e6;
         border-left: 5px solid #ff4d4d;
