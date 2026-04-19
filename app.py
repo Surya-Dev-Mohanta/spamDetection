@@ -190,7 +190,7 @@ with main_col:
             
             if st.button("Clear History", size="small"):
                 st.session_state.history = []
-                st.rerun()    }
+                st.rerun()    
     .result-box-spam {
         background-color: #ffe6e6;
         border-left: 5px solid #ff4d4d;
