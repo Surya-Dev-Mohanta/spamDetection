@@ -1,202 +1,237 @@
+# ==============================
+# 1. IMPORT LIBRARIES
+# ==============================
 import streamlit as st
 import pandas as pd
-import time
+import numpy as np
+import re
+import nltk
+from langdetect import detect
+from deep_translator import GoogleTranslator
+
+from sklearn.model_selection import train_test_split
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.naive_bayes import MultinomialNB
-from sklearn.pipeline import make_pipeline
+from sklearn.svm import SVC
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier, VotingClassifier
 
-# ==========================================
-# 1. Page Configuration & Modern CSS
-# ==========================================
-st.set_page_config(page_title="SpamGuard AI", page_icon="🛡️", layout="wide", initial_sidebar_state="expanded")
+nltk.download('stopwords', quiet=True)
+from nltk.corpus import stopwords
 
-st.markdown("""
-    <style>
-    /* Global Font & Background */
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap');
-    html, body, [class*="css"]  {
-        font-family: 'Inter', sans-serif;
-    }
+# ==============================
+# STREAMLIT PAGE CONFIG
+# ==============================
+st.set_page_config(page_title="SMS Spam Detector", page_icon="🚨", layout="centered")
+
+# ==============================
+# 2 & 3 & 4 & 5 & 6. CACHED MODEL TRAINING
+# ==============================
+@st.cache_resource(show_spinner="Loading data and training model... This only happens once!")
+def train_model():
+    # Load Data
+    df = pd.read_csv("dataset_with_researched.csv", encoding='latin-1')[['v1', 'v2']]
+    df.columns = ['label', 'message']
+    df['label'] = df['label'].map({'ham': 0, 'spam': 1})
+
+    # Preprocessing
+    stop_words = set(stopwords.words('english'))
+
+    def clean_text(text):
+        text = text.lower()
+        text = re.sub(r'http\S+|www\S+', 'URL', text)
+        text = re.sub(r'[^a-zA-Z0-9 ]', '', text)
+        words = text.split()
+        words = [w for w in words if w not in stop_words]
+        return " ".join(words)
+
+    df['clean_msg'] = df['message'].apply(clean_text)
+
+    # Vectorization
+    vectorizer = TfidfVectorizer(ngram_range=(1,2), max_features=5000)
+    X = vectorizer.fit_transform(df['clean_msg'])
+    y = df['label']
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+    # Train Models
+    nb = MultinomialNB()
+    svm = SVC(probability=True)
+    lr = LogisticRegression()
     
-    /* Result Cards */
-    .result-spam {
-        background: linear-gradient(135deg, #ff9a9e 0%, #fecfef 99%);
-        border-left: 8px solid #ff4d4d;
-        padding: 25px;
-        border-radius: 12px;
-        color: #900000;
-        font-size: 24px;
-        font-weight: 800;
-        text-align: center;
-        box-shadow: 0 10px 20px rgba(255, 77, 77, 0.15);
-        animation: slideIn 0.4s ease-out;
-    }
-    
-    .result-safe {
-        background: linear-gradient(135deg, #d4fc79 0%, #96e6a1 100%);
-        border-left: 8px solid #28a745;
-        padding: 25px;
-        border-radius: 12px;
-        color: #0d5c1b;
-        font-size: 24px;
-        font-weight: 800;
-        text-align: center;
-        box-shadow: 0 10px 20px rgba(40, 167, 69, 0.15);
-        animation: slideIn 0.4s ease-out;
-    }
-    
-    /* Animations */
-    @keyframes slideIn {
-        from { opacity: 0; transform: translateY(20px); }
-        to { opacity: 1; transform: translateY(0); }
-    }
-    
-    /* Hide Streamlit Branding */
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    </style>
-""", unsafe_allow_html=True)
+    nb.fit(X_train, y_train)
+    svm.fit(X_train, y_train)
+    lr.fit(X_train, y_train)
 
-# ==========================================
-# 2. Session State Initialization
-# ==========================================
-if 'history' not in st.session_state:
-    st.session_state.history = []
+    # Ensemble
+    ensemble = VotingClassifier(estimators=[
+        ('nb', nb),
+        ('lr', lr),
+        ('rf', RandomForestClassifier())
+    ], voting='soft')
 
-# ==========================================
-# 3. Logic & Data (Cached)
-# ==========================================
-@st.cache_data
-def load_data():
-    base_spam = [
-        "Win a free iPhone now! Click here.", 
-        "URGENT: Your bank account is locked. Verify immediately.", 
-        "Claim your $1000 Walmart gift card today.", 
-        "Exclusive offer just for you. Buy one get one free!", 
-        "Earn $5000 a week working from home! Ask me how."
-    ]
-    base_safe = [
-        "Hey, what time are we meeting tomorrow?", 
-        "Can you send over the notes from class?", 
-        "I'm picking up groceries, do you need anything?", 
-        "Let's catch up later today.", 
-        "The project deadline has been moved to Friday."
-    ]
+    ensemble.fit(X_train, y_train)
     
-    spam_data = [f"{msg} (ID: {i})" for i, msg in enumerate(base_spam * 10)]
-    safe_data = [f"{msg} (Ref: {i})" for i, msg in enumerate(base_safe * 10)]
-    
-    df = pd.DataFrame({
-        'message': spam_data + safe_data,
-        'label': ['spam'] * 50 + ['safe'] * 50
-    })
-    return df.sample(frac=1, random_state=42).reset_index(drop=True)
+    return vectorizer, ensemble, stop_words
 
-@st.cache_resource
-def train_model(df):
-    model = make_pipeline(TfidfVectorizer(), MultinomialNB())
-    model.fit(df['message'], df['label'])
-    return model
+# Load the cached model
+vectorizer, ensemble, stop_words = train_model()
 
-data = load_data()
-model = train_model(data)
+# ==============================
+# 8. SMART FEATURES
+# ==============================
+suspicious_words = ["win", "free", "urgent", "click", "offer", "credit", "loan", "upi", "bank"]
 
-# ==========================================
-# 4. Dashboard Layout - Sidebar
-# ==========================================
-with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/2913/2913092.png", width=80)
-    st.title("SpamGuard AI")
-    st.caption("Powered by Machine Learning")
-    st.write("---")
-    
-    st.subheader("📊 Engine Metrics")
-    col1, col2 = st.columns(2)
-    col1.metric("Training Data", f"{len(data)} msg")
-    col2.metric("Algorithm", "Naive Bayes")
-    
-    st.write("---")
-    st.subheader("💡 Tips")
-    st.info("Try pasting a real promotional text message or a casual text to a friend to see how the model reacts.")
+def clean_input(text):
+    text = text.lower()
+    text = re.sub(r'http\S+|www\S+', 'URL', text)
+    text = re.sub(r'[^a-zA-Z0-9 ]', '', text)
+    words = text.split()
+    words = [w for w in words if w not in stop_words]
+    return " ".join(words)
 
-# ==========================================
-# 5. Dashboard Layout - Main Workspace
-# ==========================================
-spacer_left, main_col, spacer_right = st.columns([1, 3, 1])
+def detect_links(text):
+    return re.findall(r'(https?://\S+|bit\.ly/\S+|tinyurl\.com/\S+)', text)
 
-with main_col:
-    st.markdown("<h1 style='text-align: center; margin-bottom: 0;'>Message Analysis Portal</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: gray;'>Detect phishing, promotions, and malicious text in milliseconds.</p>", unsafe_allow_html=True)
-    st.write("")
-    
-    # Input Container
-    with st.container():
-        user_input = st.text_area(
-            "Message Content", 
-            height=120, 
-            placeholder="Type or paste the message you want to scan here...",
-            label_visibility="collapsed"
-        )
-        
-        analyze_btn = st.button("🔍 Scan Message", use_container_width=True, type="primary")
-
-    # Processing & Results
-    if analyze_btn:
-        if not user_input.strip():
-            st.warning("Please enter a message to scan.")
+def highlight_words_html(text):
+    highlighted = []
+    for word in text.split():
+        # Remove punctuation for matching, but keep it in the final output
+        clean_word = re.sub(r'[^a-zA-Z0-9]', '', word).lower()
+        if clean_word in suspicious_words:
+            highlighted.append(f"<span style='color:red; font-weight:bold;'>{word}</span>")
         else:
-            with st.spinner("Extracting features and classifying text..."):
-                time.sleep(0.6) 
-                
-                prediction = model.predict([user_input])[0]
-                
-                # Save to history
-                st.session_state.history.append({"Message": user_input, "Result": prediction.upper()})
-            
-            # Display Result
-            if prediction == "spam":
-                st.markdown("""
-                    <div class="result-spam">
-                        🚨 THREAT DETECTED: SPAM
-                    </div>
-                """, unsafe_allow_html=True)
-            else:
-                st.markdown("""
-                    <div class="result-safe">
-                        ✅ CLEAR: SAFE MESSAGE
-                    </div>
-                """, unsafe_allow_html=True)
-                st.balloons()
+            highlighted.append(word)
+    return " ".join(highlighted)
 
-    st.write("---")
+def categorize_message(text):
+    text_lower = text.lower()
+    if "upi" in text_lower: return "UPI Fraud"
+    elif "credit" in text_lower: return "Credit Card Scam"
+    elif "loan" in text_lower: return "Loan Scam"
+    elif "bank" in text_lower: return "Bank Fraud"
+    else: return "General Spam"
+
+def suggest_action(text, category, links):
+    actions = []
+    text_lower = text.lower()
+
+    if links: actions.append("⚠️ Do NOT click on suspicious links.")
+    if category == "Credit Card Scam":
+        actions.append("💳 Never share your CVV, PIN, or OTP.")
+        actions.append("🏦 Banks never ask for sensitive details via SMS.")
+    elif category == "Bank Fraud":
+        actions.append("🏦 Do not share OTP or login credentials.")
+        actions.append("📞 Contact your bank directly if unsure.")
+    elif category == "UPI Fraud":
+        actions.append("📲 Do NOT approve unknown payment requests.")
+        actions.append("🔐 UPI collect requests can steal money.")
+    elif category == "Loan Scam":
+        actions.append("💰 Avoid instant loan offers without verification.")
+        actions.append("🚫 Never pay upfront processing fees.")
+        
+    if "win" in text_lower or "free" in text_lower:
+        actions.append("🎁 If it sounds too good to be true, it's likely fake.")
+    if "otp" in text_lower or "urgent" in text_lower:
+        actions.append("⏳ Scammers create urgency—stay calm and verify.")
+    if "call" in text_lower or "contact" in text_lower:
+        actions.append("📞 Avoid calling unknown numbers from SMS.")
+    if not actions:
+        actions.append("⚠️ Be cautious. Verify sender before taking action.")
+        
+    return actions
+
+# ==============================
+# TRANSLATION FUNCTIONS
+# ==============================
+def translate_sms(text, target_lang):
+    try:
+        lang_map = {"en": "en", "hi": "hi", "or": "or"}
+        if target_lang not in lang_map: return text, False
+        translated = GoogleTranslator(source='auto', target=lang_map[target_lang]).translate(text)
+        return translated, True
+    except Exception as e:
+        return text, False
+
+def translate_actions(actions, lang_choice, translation_ok):
+    if not translation_ok or lang_choice not in ["hi", "or"]: return actions
+    translated_actions = []
+    for act in actions:
+        try:
+            translated = GoogleTranslator(source='auto', target=lang_choice).translate(act)
+            translated_actions.append(translated)
+        except:
+            translated_actions.append(act)
+    return translated_actions
+
+# ==============================
+# STREAMLIT UI (FRONTEND)
+# ==============================
+st.title("🚨 Smart SMS Fraud Detector")
+st.write("Paste an SMS message below to analyze it for spam, phishing, and financial fraud.")
+
+# Input Form
+with st.form("sms_form"):
+    msg = st.text_area("Enter SMS Message:", height=150)
     
-    # History Expander
-    if st.session_state.history:
-        with st.expander("🕒 Session History", expanded=False):
-            history_df = pd.DataFrame(st.session_state.history)
-            
-            # Function to color code the dataframe
-            def color_result(val):
-                color = '#ff4d4d' if val == 'SPAM' else '#28a745'
-                return f'color: {color}; font-weight: bold;'
-            
-            # Safe rendering for the dataframe styling (handles newer and older pandas versions)
-            try:
-                styled_df = history_df.style.map(color_result, subset=['Result'])
-            except AttributeError:
-                styled_df = history_df.style.applymap(color_result, subset=['Result'])
-            
-            st.dataframe(
-                styled_df,
-                use_container_width=True,
-                hide_index=True
-            )
-            
-            if st.button("Clear History", size="small"):
-                st.session_state.history = []
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        lang_choice = st.selectbox("Translation:", ["Skip", "English (en)", "Hindi (hi)", "Odia (or)"])
+    
+    submit_button = st.form_submit_button("Analyze Message", type="primary")
+
+# Processing and Output
+if submit_button:
+    if not msg.strip():
+        st.warning("Please enter a message to analyze.")
+    else:
+        original_msg = msg
+        target_lang_code = lang_choice.split("(")[-1].replace(")", "") if lang_choice != "Skip" else "skip"
+        translation_ok = False
+        
+        # Translation Step
+        with st.spinner("Analyzing message..."):
+            if target_lang_code != "skip":
+                msg, translation_ok = translate_sms(original_msg, target_lang_code)
+                st.info(f"**Translated Message:**\n\n{msg}")
+
+            # Prediction Step
+            cleaned = clean_input(msg)
+            vector = vectorizer.transform([cleaned])
+            pred = ensemble.predict(vector)[0]
+            prob = ensemble.predict_proba(vector)[0][1]
+
+            st.divider()
+
+            # Results Display
+            if pred == 1:
+                st.error("🚨 **SPAM / FRAUD DETECTED** 🚨")
                 
-                # Safe reload (handles newer and older Streamlit versions)
-                try:
-                    st.rerun()
-                except AttributeError:
-                    st.experimental_rerun()
+                # Metrics Row
+                m1, m2 = st.columns(2)
+                m1.metric("Spam Confidence Score", f"{round(prob*100, 2)}%")
+                m2.metric("Threat Category", categorize_message(msg))
+                
+                # Highlighted Text
+                st.subheader("📝 Message Analysis")
+                highlighted_html = highlight_words_html(original_msg)
+                st.markdown(f"<div style='background-color: #f0f2f6; padding: 15px; border-radius: 5px; color: black;'>{highlighted_html}</div>", unsafe_allow_html=True)
+                
+                # Links
+                links = detect_links(original_msg)
+                if links:
+                    st.warning(f"**⚠️ Suspicious Links Found:** {', '.join(links)}")
+                
+                # Suggested Actions
+                st.subheader("🛡️ Suggested Actions")
+                actions = suggest_action(msg, categorize_message(msg), links)
+                actions = translate_actions(actions, target_lang_code, translation_ok)
+                
+                for act in actions:
+                    st.markdown(f"- {act}")
+                    
+            else:
+                st.success("✅ **SAFE MESSAGE**")
+                st.balloons()
+                st.write("This message does not appear to contain spam or fraud patterns.")
+                st.metric("Spam Confidence Score", f"{round(prob*100, 2)}%")
